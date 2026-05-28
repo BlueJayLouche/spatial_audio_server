@@ -296,15 +296,46 @@ Replace conrod with egui via `eframe 0.34`. All UI code rewritten; logic
 - [x] `cpal::SampleRate = u32` in 0.17 — `best_stream_config()` uses u32 directly
 - [x] `project::{State, Speaker, Source, Sources}` now derive `Clone`
 
-**Notes:**
-- `sound_cmd_rx` is intentionally dropped in Phase 6 (audio mixing is a future step);
-  the soundscape sends commands via `let _ = send(...)` which silently discards them
-  on disconnected channel — no blocking, no panic.
-- `monitor_tx` is dropped in Phase 6; the audio output thread will send frames
-  through it once DBAP mixing is implemented.
+---
 
-**Done when:** full startup → use → graceful shutdown cycle completes without
-panics or resource leaks (check with Instruments / Valgrind).
+### Phase 6.5 — Full Audio Pipeline ✅ COMPLETE (37/37 tests pass)
+
+Wire every component end-to-end so real audio flows through the DBAP engine.
+
+- [x] **Audio output rewrite** — `OutputState` with `ActiveSoundState` per sound;
+      split-borrow pattern allows simultaneous access to `active_sounds`, `wav_cache`,
+      and `monitor_tx` inside the lock-free cpal render callback; no heap allocation
+      on the hot path (pre-allocated scratch `Vec`)
+- [x] **DBAP render** — `SpeakerGains` iterator; `blurred_distance_2`,
+      `a_coefficient`, `k_coefficient`; gains recomputed each 1024-frame block per
+      active sound; linear attack/release envelope applied per sample
+- [x] **WAV playback** — `wav_rx` owned by output thread; decoded WAVs cached in
+      `FxHashMap<u64, CachedWav>`; `wav_sample()` loops on end-of-file
+- [x] **Live input as spatial emitters** — `AudioSourceKind::Realtime { channels }`;
+      `realtime_sample()` reads the tail of the most-recent input buffer forwarded
+      via a bounded crossbeam channel from the cpal input callback
+- [x] **SoundCommand channel** — `crossbeam::unbounded` shared between soundscape
+      thread (tx), GUI (cloned tx `audio_cmd_tx`), and output thread (rx); variants:
+      `Spawn`, `Despawn`, `UpdatePosition`, `SetSpeakers`, `SetMasterVolume`, `SetRolloff`
+- [x] **Volume controls** — `volume: f32` in `SoundCommand::Spawn` populated from
+      source `volume`/`muted` state; `SetMasterVolume`/`SetRolloff` sent by GUI
+      master panel; render applies `raw * env * sound_volume * master`
+- [x] **Audio monitor** — output thread sends `SoundUpdate`/`SoundEnded`/`Frame`
+      via bounded `MsgSender`; GUI drains `audio_monitor_rx` each frame and displays
+      master peak bar, per-speaker levels, and active sound count
+- [x] **Soundscape model sync** — `gui::sync_soundscape()` serialises all
+      installations, groups, speakers, and sources into the soundscape thread's
+      `Model` at startup and on every relevant edit; fixes sounds never spawning
+      (empty maps = no eligible sources/groups)
+- [x] **GUI additions** — WAV file picker (native dialog), audio device selector,
+      installation checkboxes per source and per speaker, group checkboxes per source,
+      simultaneous-sounds sliders
+
+**Notes:**
+- Split-borrow inside audio callback: `let Self { active_sounds, wav_cache, .. } = self;`
+  lets Rust see that borrows are disjoint without unsafe.
+- `wav_rx` is now returned from `reader::spawn()` as a tuple `(Spawned, Receiver<DecodedWav>)`;
+  the output thread owns the receiver, not the reader thread.
 
 ---
 

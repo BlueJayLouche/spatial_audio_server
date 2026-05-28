@@ -31,6 +31,6 @@
   },
   "selected_project_slug": "default-project",
   "cpu_saving_mode": false,
-  "target_input_device_name": "",
-  "target_output_device_name": ""
+  "target_input_device_name": "AC’s Little iPhone Microphone",
+  "target_output_device_name": "MacBook Pro Speakers"
 }

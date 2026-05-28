@@ -12,18 +12,25 @@ while preserving all original features and the proven 7-thread architecture.
 
 ## Features
 
-- Stores and plays back multi-channel WAV content.
+- Plays back multi-channel WAV files and captures live audio input as spatial
+  sound emitters — both routed through the same DBAP engine.
+- **DBAP** (Distance Based Amplitude Panning) spatial mixing: per-sound
+  gain computed each render block from speaker positions, blurred distance,
+  and configurable rolloff (dB per doubling of distance).
+- Master volume and per-source volume controls with linear attack/release
+  envelopes; mute toggle per source.
 - Interfaces with the system's audio input and output devices via **cpal**
-  (Core Audio on macOS, ALSA/JACK on Linux, WASAPI/ASIO on Windows).
+  (Core Audio on macOS, ALSA/JACK on Linux, WASAPI/ASIO on Windows); input
+  and output devices selected at startup from the GUI.
 - Analyses audio data per-speaker and sends it to installation computers via
   **OSC** (rosc).
 - Responds to control values via OSC (`/bp/master_volume`,
   `/bp/source_volume/<name>`, `/bp/play_soundscape`, `/bp/pause_soundscape`).
 - Generatively produces a spatial soundscape using a 16 ms tick engine with
   Agent steering and N-gon path-tracing movement.
-- **DBAP** (Distance Based Amplitude Panning) spatial mixing.
 - GUI built with **egui** via **eframe**: collapsible side-panel editors,
-  live audio monitor, and a 2-D floorplan canvas.
+  live audio monitor (per-speaker levels, active sound count, peak/RMS),
+  2-D floorplan canvas, WAV file picker, and device selector.
 
 ## Building
 

@@ -2,7 +2,7 @@ use crate::master::Master;
 use egui::Ui;
 
 /// Returns `true` if volume or rolloff changed (caller should push to audio thread).
-pub fn show(ui: &mut Ui, master: &mut Master, cpu_saving: &mut bool, is_playing: bool) -> bool {
+pub fn show(ui: &mut Ui, master: &mut Master, _cpu_saving: &mut bool, _is_playing: bool) -> bool {
     let mut changed = false;
 
     ui.heading("Master");
