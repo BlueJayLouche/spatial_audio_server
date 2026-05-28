@@ -1,7 +1,7 @@
 use crate::audio::speaker;
 use crate::geom::Point2;
 use crate::metres::Metres;
-use crate::project::Speakers;
+use crate::project::{Installations, Speakers};
 use egui::Ui;
 
 /// Transient UI state for the speaker editor.
@@ -12,7 +12,13 @@ pub struct State {
 }
 
 /// Returns `true` if any speaker was added, removed, or had a field changed.
-pub fn show(ui: &mut Ui, state: &mut State, speakers: &mut Speakers, num_channels: usize) -> bool {
+pub fn show(
+    ui: &mut Ui,
+    state: &mut State,
+    speakers: &mut Speakers,
+    installations: &Installations,
+    num_channels: usize,
+) -> bool {
     let mut changed = false;
 
     ui.heading("Speakers");
@@ -67,6 +73,26 @@ pub fn show(ui: &mut Ui, state: &mut State, speakers: &mut Speakers, num_channel
                 }
             });
 
+            // Installation assignment
+            ui.add_space(4.0);
+            ui.label("Installations (check to assign):");
+            let mut inst_ids: Vec<_> = installations.keys().copied().collect();
+            inst_ids.sort_by_key(|i| i.0);
+            for inst_id in inst_ids {
+                if let Some(inst) = installations.get(&inst_id) {
+                    let mut enabled = spk.audio.installations.contains(&inst_id);
+                    if ui.checkbox(&mut enabled, &inst.name).changed() {
+                        if enabled {
+                            spk.audio.installations.insert(inst_id);
+                        } else {
+                            spk.audio.installations.remove(&inst_id);
+                        }
+                        changed = true;
+                    }
+                }
+            }
+
+            ui.add_space(4.0);
             if ui.button("Remove speaker").clicked() {
                 speakers.remove(&sel_id);
                 state.selected = None;

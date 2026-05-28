@@ -356,7 +356,7 @@ fn side_panel(ui: &mut egui::Ui, app: &mut SpatialAudioApp) {
         .show(ui, |ui| {
             if let Some((state, editor)) = app.project.as_mut() {
                 let changed = editors::speaker_editor::show(
-                    ui, &mut editor.speaker, &mut state.speakers, 128,
+                    ui, &mut editor.speaker, &mut state.speakers, &state.installations, 128,
                 );
                 if changed {
                     app.send_speakers();
