@@ -501,22 +501,30 @@ fn tick(model: &mut Model, tick: Tick) {
 
             let sound_id = model.sound_id_gen.generate_next();
 
-            // Notify audio output thread
+            // Determine source kind and trigger WAV decode if needed.
+            let kind = match model.sources.get(&source_id) {
+                Some(src) => match &src.kind {
+                    source::Kind::Wav(wav) => {
+                        model.wav_reader.load(source_id.0, wav.path.clone());
+                        sound::AudioSourceKind::Wav { id: source_id.0 }
+                    }
+                    source::Kind::Realtime(rt) => {
+                        sound::AudioSourceKind::Realtime { channels: rt.channels.clone() }
+                    }
+                },
+                None => continue 'installations,
+            };
+
+            // Notify audio output thread.
             let _ = model.sound_cmd_tx.send(SoundCommand::Spawn {
                 id: sound_id,
                 source_id,
+                kind,
                 position: pos,
                 attack_frames,
                 release_frames,
                 duration_frames: Some(duration_frames),
             });
-
-            // Track in WAV reader if needed
-            if let Some(src) = model.sources.get(&source_id) {
-                if let source::Kind::Wav(wav) = &src.kind {
-                    model.wav_reader.load(source_id.0, wav.path.clone());
-                }
-            }
 
             let active = ActiveSound {
                 initial_installation: installation,
@@ -858,7 +866,7 @@ mod tests {
     #[test]
     fn soundscape_thread_starts_and_exits() {
         let (cmd_tx, _cmd_rx) = crossbeam::channel::unbounded::<sound::SoundCommand>();
-        let wav = crate::audio::source::wav::reader::spawn();
+        let (wav, _wav_rx) = crate::audio::source::wav::reader::spawn();
         let sc = spawn([1u8; 16], sound::IdGenerator::new(), wav.handle, cmd_tx);
         std::thread::sleep(std::time::Duration::from_millis(50));
         sc.exit();

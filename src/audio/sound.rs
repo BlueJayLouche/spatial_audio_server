@@ -3,6 +3,7 @@ use crate::installation;
 use crate::metres::Metres;
 use fxhash::FxHashSet;
 use serde::{Deserialize, Serialize};
+use std::ops;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
@@ -72,12 +73,31 @@ impl Handle {
     pub fn source_id(&self) -> crate::audio::source::Id { self.source_id }
 }
 
-/// Commands sent from the soundscape thread to the audio output thread.
+/// Where a spawned sound's audio samples come from.
+pub enum AudioSourceKind {
+    /// Decoded WAV file identified by source id.
+    Wav { id: u64 },
+    /// Live audio input — channels selected from the input stream.
+    Realtime { channels: ops::Range<usize> },
+}
+
+/// Minimal speaker description sent to the audio output thread for DBAP.
+#[derive(Clone, Debug)]
+pub struct SpeakerSnapshot {
+    /// Position in metres `[x, y]`.
+    pub point: [f64; 2],
+    /// Zero-based output channel index.
+    pub channel: usize,
+}
+
+/// Commands sent from the soundscape thread (or GUI) to the audio output thread.
 pub enum SoundCommand {
     /// Add a new sound to the audio mix.
     Spawn {
         id: Id,
         source_id: crate::audio::source::Id,
+        /// What audio data backs this sound instance.
+        kind: AudioSourceKind,
         position: Position,
         attack_frames: i64,
         release_frames: i64,
@@ -88,4 +108,6 @@ pub enum SoundCommand {
     Despawn(Id),
     /// Move a playing sound.
     UpdatePosition { id: Id, position: Position },
+    /// Replace the speaker list used for DBAP panning.
+    SetSpeakers(Vec<SpeakerSnapshot>),
 }

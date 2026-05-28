@@ -1,4 +1,5 @@
 use crate::audio;
+use crate::audio::sound;
 use crate::config::Config;
 use crate::gui::{self, SpatialAudioApp};
 use crate::project::Project;
@@ -39,28 +40,79 @@ pub fn run() {
         StreamDir::Output,
     );
 
+    // ── SoundCommand channel — shared by soundscape (tx) and output (rx) ──────
+    //
+    // Keep a second sender clone so the GUI can send SetSpeakers and future
+    // direct commands without going through the soundscape thread.
+
     let (sound_cmd_tx, sound_cmd_rx) = crossbeam::channel::unbounded::<audio::sound::SoundCommand>();
+    let gui_sound_cmd_tx = sound_cmd_tx.clone();
 
-    // WAV reader thread
-    let wav_spawned = audio::source::wav::reader::spawn();
+    // ── WAV reader thread ─────────────────────────────────────────────────────
 
-    // Audio output stream (renders silence; mixing wired in a future step)
-    let audio_out = audio::output::Model::new(&output_device, &output_config)
-        .expect("failed to start audio output stream");
+    let (wav_spawned, wav_rx) = audio::source::wav::reader::spawn();
 
-    // Audio input stream (optional — fall back gracefully)
-    let audio_in = audio::find_input_device(&host, &config.target_input_device_name)
-        .and_then(|dev| {
-            let cfg = best_stream_config(
-                &dev,
-                audio::SAMPLE_RATE as u32,
-                2,
-                cpal::SampleFormat::F32,
-                StreamDir::Input,
-            );
-            let (tx, _rx) = crossbeam::channel::bounded::<Vec<f32>>(4);
-            audio::input::Model::new(&dev, &cfg, tx).ok()
-        });
+    // ── Live input channel ────────────────────────────────────────────────────
+    //
+    // The input callback pushes Vec<f32> chunks here; the output engine drains
+    // them each render block.  Bounded at 4 so the callback drops silently when
+    // the output thread is slow — no backpressure on the audio thread.
+
+    let (input_tx, input_rx) = crossbeam::channel::bounded::<Vec<f32>>(4);
+
+    // Probe input device config now so we know the channel count before building
+    // the output model.  We build the model first so it owns `input_rx`.
+    let (input_device_opt, input_cfg_opt) =
+        audio::find_input_device(&host, &config.target_input_device_name)
+            .map(|dev| {
+                let cfg = best_stream_config(
+                    &dev,
+                    audio::SAMPLE_RATE as u32,
+                    2,
+                    cpal::SampleFormat::F32,
+                    StreamDir::Input,
+                );
+                (Some(dev), Some(cfg))
+            })
+            .unwrap_or((None, None));
+
+    let input_channels: usize = input_cfg_opt
+        .as_ref()
+        .map(|c| c.channels as usize)
+        .unwrap_or(2);
+
+    // ── Load project ──────────────────────────────────────────────────────────
+
+    let project = Project::load(&assets, &project_slug);
+
+    // Build initial speaker snapshot for DBAP.
+    let initial_speakers: Vec<sound::SpeakerSnapshot> = project.state.speakers.values()
+        .map(|s| sound::SpeakerSnapshot {
+            point: [s.audio.point.x.0, s.audio.point.y.0],
+            channel: s.audio.channel,
+        })
+        .collect();
+
+    // ── Audio output stream (full mixing engine) ──────────────────────────────
+
+    let audio_out = audio::output::Model::new(
+        &output_device,
+        &output_config,
+        sound_cmd_rx,
+        wav_rx,
+        input_rx,
+        project.state.master.volume,
+        project.state.master.dbap_rolloff_db,
+        initial_speakers,
+        input_channels,
+    )
+    .expect("failed to start audio output stream");
+
+    // ── Audio input stream (optional) ─────────────────────────────────────────
+
+    let audio_in = input_device_opt.zip(input_cfg_opt).and_then(|(dev, cfg)| {
+        audio::input::Model::new(&dev, &cfg, input_tx).ok()
+    });
 
     // ── Soundscape ────────────────────────────────────────────────────────────
 
@@ -77,7 +129,6 @@ pub fn run() {
     let osc_in = crate::osc::input::spawn(osc_port)
         .unwrap_or_else(|e| {
             eprintln!("OSC input on port {osc_port} failed: {e} — continuing without OSC input");
-            // Create a no-op spawned that immediately exits
             no_op_osc_in()
         });
 
@@ -86,10 +137,6 @@ pub fn run() {
     // ── Audio monitor channel ─────────────────────────────────────────────────
 
     let (monitor_tx, monitor_rx) = gui::monitor::channel();
-
-    // ── Load project ──────────────────────────────────────────────────────────
-
-    let project = Project::load(&assets, &project_slug);
 
     // ── Build and run the GUI ─────────────────────────────────────────────────
 
@@ -115,8 +162,8 @@ pub fn run() {
             app.project_slug = project_slug;
             app.project = Some((project.state, Default::default()));
             app.audio_monitor_rx = Some(monitor_rx);
-            app._sound_cmd_rx = Some(sound_cmd_rx);
             app._monitor_tx = Some(monitor_tx);
+            app.audio_cmd_tx = Some(gui_sound_cmd_tx);
             app.osc_in = Some(osc_in);
             app.osc_out = Some(osc_out);
             app.soundscape = Some(soundscape);

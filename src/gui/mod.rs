@@ -6,6 +6,7 @@ use crate::audio::detection::AudioFrameData;
 use crate::audio::sound;
 use crate::osc::input::ControlMsg;
 use crate::project;
+use crossbeam::channel::Sender;
 use fxhash::FxHashMap;
 use monitor::ActiveSoundMonitor;
 use std::collections::VecDeque;
@@ -81,8 +82,8 @@ pub struct SpatialAudioApp {
     // Incoming data channels
     pub audio_monitor_rx: Option<monitor::MsgReceiver>,
 
-    // Channel ends kept alive so pipelines are not severed before mixing is wired
-    pub _sound_cmd_rx: Option<crossbeam::channel::Receiver<crate::audio::sound::SoundCommand>>,
+    // Sender to the audio output thread for speaker updates and future direct commands
+    pub audio_cmd_tx: Option<Sender<sound::SoundCommand>>,
     pub _monitor_tx: Option<monitor::MsgSender>,
 
     // Persistence
@@ -114,7 +115,7 @@ impl Default for SpatialAudioApp {
             _audio_in: None,
             _audio_out: None,
             audio_monitor_rx: None,
-            _sound_cmd_rx: None,
+            audio_cmd_tx: None,
             _monitor_tx: None,
             assets: PathBuf::from("assets"),
             config: Default::default(),
@@ -221,6 +222,19 @@ impl SpatialAudioApp {
         if let Err(e) = crate::utils::save_to_json(&path, &self.config) {
             eprintln!("failed to save config: {e}");
         }
+    }
+
+    /// Send the current speaker list to the audio output thread for DBAP panning.
+    pub fn send_speakers(&self) {
+        let Some(tx) = self.audio_cmd_tx.as_ref() else { return };
+        let Some((state, _)) = self.project.as_ref() else { return };
+        let snapshots: Vec<sound::SpeakerSnapshot> = state.speakers.values()
+            .map(|s| sound::SpeakerSnapshot {
+                point: [s.audio.point.x.0, s.audio.point.y.0],
+                channel: s.audio.channel,
+            })
+            .collect();
+        let _ = tx.send(sound::SoundCommand::SetSpeakers(snapshots));
     }
 
     fn shutdown_threads(&mut self) {
@@ -341,7 +355,13 @@ fn side_panel(ui: &mut egui::Ui, app: &mut SpatialAudioApp) {
         .default_open(app.panel_visibility.speaker)
         .show(ui, |ui| {
             if let Some((state, editor)) = app.project.as_mut() {
-                editors::speaker_editor::show(ui, &mut editor.speaker, &mut state.speakers, 128);
+                let changed = editors::speaker_editor::show(
+                    ui, &mut editor.speaker, &mut state.speakers, 128,
+                );
+                if changed {
+                    app.send_speakers();
+                    app.save_project();
+                }
             } else {
                 ui.label("No project loaded.");
             }

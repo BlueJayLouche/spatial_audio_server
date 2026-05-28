@@ -56,6 +56,24 @@ pub fn show(ui: &mut Ui, state: &mut State, sources: &mut SourcesMap) {
                 }
             }
         }
+
+        if ui.button("Add Realtime Input").clicked() {
+            let next_id = source::Id(
+                sources.keys().map(|k| k.0).max().map(|m| m + 1).unwrap_or(0),
+            );
+            sources.insert(next_id, Source {
+                name: format!("Input {}", next_id.0),
+                audio: source::Source {
+                    kind: source::Kind::Realtime(source::realtime::Realtime::default()),
+                    role: Some(source::Role::Soundscape(source::Soundscape::default())),
+                    spread: source::default::SPREAD,
+                    channel_radians: source::default::CHANNEL_RADIANS,
+                    volume: source::default::VOLUME,
+                    muted: false,
+                },
+            });
+            state.last_error = None;
+        }
     });
 
     if let Some(err) = &state.last_error {

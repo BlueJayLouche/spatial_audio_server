@@ -39,11 +39,12 @@ impl Handle {
 
 }
 
-/// Returned by `spawn()` — holds both the handle and the thread's JoinHandle.
+/// Returned by `spawn()` — holds the command handle and thread join handle.
+///
+/// `wav_rx` is returned separately so the audio output thread can own it.
 pub struct Spawned {
     pub handle: Handle,
     thread: JoinHandle<()>,
-    pub wav_rx: Receiver<DecodedWav>,
 }
 
 impl Spawned {
@@ -60,10 +61,10 @@ impl Spawned {
 
 /// Spawn the WAV reader thread.
 ///
-/// Decoded WAV data is sent back via the `wav_rx` channel in `Spawned`. The
-/// audio output thread should receive from `wav_rx` and cache decoded samples
-/// for mixing.
-pub fn spawn() -> Spawned {
+/// Returns `(Spawned, wav_rx)`. Pass `wav_rx` to the audio output thread so it
+/// can cache decoded samples for mixing. `Spawned` keeps the command handle for
+/// load/unload requests.
+pub fn spawn() -> (Spawned, Receiver<DecodedWav>) {
     let (command_tx, command_rx) = channel::unbounded::<Command>();
     let (wav_tx, wav_rx) = channel::bounded::<DecodedWav>(64);
 
@@ -72,7 +73,7 @@ pub fn spawn() -> Spawned {
         .spawn(move || reader_loop(command_rx, wav_tx))
         .expect("failed to spawn wav-reader thread");
 
-    Spawned { handle: Handle { command_tx }, thread, wav_rx }
+    (Spawned { handle: Handle { command_tx }, thread }, wav_rx)
 }
 
 fn reader_loop(command_rx: Receiver<Command>, wav_tx: Sender<DecodedWav>) {

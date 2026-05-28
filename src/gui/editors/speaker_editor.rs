@@ -11,7 +11,10 @@ pub struct State {
     pub new_name: String,
 }
 
-pub fn show(ui: &mut Ui, state: &mut State, speakers: &mut Speakers, num_channels: usize) {
+/// Returns `true` if any speaker was added, removed, or had a field changed.
+pub fn show(ui: &mut Ui, state: &mut State, speakers: &mut Speakers, num_channels: usize) -> bool {
+    let mut changed = false;
+
     ui.heading("Speakers");
     ui.separator();
 
@@ -32,7 +35,9 @@ pub fn show(ui: &mut Ui, state: &mut State, speakers: &mut Speakers, num_channel
         if let Some(spk) = speakers.get_mut(&sel_id) {
             ui.horizontal(|ui| {
                 ui.label("Name");
-                ui.text_edit_singleline(&mut spk.name);
+                if ui.text_edit_singleline(&mut spk.name).changed() {
+                    changed = true;
+                }
             });
 
             let ch_max = num_channels.max(1);
@@ -41,6 +46,7 @@ pub fn show(ui: &mut Ui, state: &mut State, speakers: &mut Speakers, num_channel
                 let mut ch = spk.audio.channel + 1;
                 if ui.add(egui::DragValue::new(&mut ch).range(1..=ch_max)).changed() {
                     spk.audio.channel = ch.saturating_sub(1);
+                    changed = true;
                 }
             });
 
@@ -49,6 +55,7 @@ pub fn show(ui: &mut Ui, state: &mut State, speakers: &mut Speakers, num_channel
                 let mut x = spk.audio.point.x.0;
                 if ui.add(egui::DragValue::new(&mut x).speed(0.01)).changed() {
                     spk.audio.point.x = Metres(x);
+                    changed = true;
                 }
             });
             ui.horizontal(|ui| {
@@ -56,12 +63,14 @@ pub fn show(ui: &mut Ui, state: &mut State, speakers: &mut Speakers, num_channel
                 let mut y = spk.audio.point.y.0;
                 if ui.add(egui::DragValue::new(&mut y).speed(0.01)).changed() {
                     spk.audio.point.y = Metres(y);
+                    changed = true;
                 }
             });
 
             if ui.button("Remove speaker").clicked() {
                 speakers.remove(&sel_id);
                 state.selected = None;
+                changed = true;
             }
         }
     }
@@ -87,6 +96,9 @@ pub fn show(ui: &mut Ui, state: &mut State, speakers: &mut Speakers, num_channel
                 },
             );
             state.selected = Some(next_id);
+            changed = true;
         }
     });
+
+    changed
 }
