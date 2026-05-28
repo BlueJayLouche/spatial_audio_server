@@ -99,6 +99,8 @@ pub enum SoundCommand {
         /// What audio data backs this sound instance.
         kind: AudioSourceKind,
         position: Position,
+        /// Per-source volume (0.0–1.0), multiplied with master volume.
+        volume: f32,
         attack_frames: i64,
         release_frames: i64,
         /// `None` means play until explicitly despawned.
@@ -110,4 +112,8 @@ pub enum SoundCommand {
     UpdatePosition { id: Id, position: Position },
     /// Replace the speaker list used for DBAP panning.
     SetSpeakers(Vec<SpeakerSnapshot>),
+    /// Update master volume (0.0–1.0) applied to all sounds.
+    SetMasterVolume(f32),
+    /// Update DBAP rolloff in dB per doubling of distance.
+    SetRolloff(f64),
 }

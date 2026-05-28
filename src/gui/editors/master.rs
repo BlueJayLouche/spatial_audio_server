@@ -1,22 +1,29 @@
 use crate::master::Master;
 use egui::Ui;
 
-pub fn show(ui: &mut Ui, master: &mut Master, cpu_saving: &mut bool, is_playing: bool) {
+/// Returns `true` if volume or rolloff changed (caller should push to audio thread).
+pub fn show(ui: &mut Ui, master: &mut Master, cpu_saving: &mut bool, is_playing: bool) -> bool {
+    let mut changed = false;
+
     ui.heading("Master");
     ui.separator();
 
     ui.horizontal(|ui| {
         ui.label("Volume");
-        ui.add(egui::Slider::new(&mut master.volume, 0.0..=1.0).show_value(true));
+        if ui.add(egui::Slider::new(&mut master.volume, 0.0..=1.0).show_value(true)).changed() {
+            changed = true;
+        }
     });
 
     ui.horizontal(|ui| {
         ui.label("DBAP rolloff (dB)");
-        ui.add(
+        if ui.add(
             egui::Slider::new(&mut master.dbap_rolloff_db, 0.0..=12.0)
                 .step_by(0.1)
                 .show_value(true),
-        );
+        ).changed() {
+            changed = true;
+        }
     });
 
     ui.horizontal(|ui| {
@@ -28,10 +35,6 @@ pub fn show(ui: &mut Ui, master: &mut Master, cpu_saving: &mut bool, is_playing:
     });
 
     ui.separator();
-    ui.horizontal(|ui| {
-        let label = if is_playing { "Pause Soundscape" } else { "Play Soundscape" };
-        let _ = ui.button(label); // Phase 6 will wire this to soundscape thread
-    });
 
-    ui.checkbox(cpu_saving, "CPU saving mode");
+    changed
 }

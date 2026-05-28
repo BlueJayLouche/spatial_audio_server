@@ -358,12 +358,29 @@ fn side_panel(ui: &mut egui::Ui, app: &mut SpatialAudioApp) {
         .default_open(app.panel_visibility.master)
         .show(ui, |ui| {
             if let Some((state, _)) = app.project.as_mut() {
-                editors::master::show(
+                let changed = editors::master::show(
                     ui,
                     &mut state.master,
                     &mut app.cpu_saving_mode,
                     app.soundscape_playing,
                 );
+                if changed {
+                    if let Some(tx) = app.audio_cmd_tx.as_ref() {
+                        let _ = tx.send(sound::SoundCommand::SetMasterVolume(state.master.volume));
+                        let _ = tx.send(sound::SoundCommand::SetRolloff(state.master.dbap_rolloff_db));
+                    }
+                    app.save_project();
+                }
+
+                ui.separator();
+                let play_label = if app.soundscape_playing { "Pause Soundscape" } else { "Play Soundscape" };
+                if ui.button(play_label).clicked() {
+                    app.soundscape_playing = !app.soundscape_playing;
+                    if let Some(ss) = app.soundscape.as_ref() {
+                        if app.soundscape_playing { ss.play(); } else { ss.pause(); }
+                    }
+                }
+                ui.checkbox(&mut app.cpu_saving_mode, "CPU saving mode");
             } else {
                 ui.label("No project loaded.");
             }

@@ -19,6 +19,7 @@ struct ActiveSoundState {
     source_id: source::Id,
     kind: ActiveSourceKind,
     position: sound::Position,
+    volume: f32,
     attack_frames: i64,
     release_frames: i64,
     duration_frames: Option<i64>,
@@ -73,7 +74,7 @@ impl OutputState {
     fn drain_commands(&mut self) {
         while let Ok(cmd) = self.sound_cmd_rx.try_recv() {
             match cmd {
-                sound::SoundCommand::Spawn { id, source_id, kind, position, attack_frames, release_frames, duration_frames } => {
+                sound::SoundCommand::Spawn { id, source_id, kind, position, volume, attack_frames, release_frames, duration_frames } => {
                     let active_kind = match kind {
                         sound::AudioSourceKind::Wav { id: wav_id } => ActiveSourceKind::Wav { wav_id },
                         sound::AudioSourceKind::Realtime { channels } => ActiveSourceKind::Realtime { channels },
@@ -82,6 +83,7 @@ impl OutputState {
                         source_id,
                         kind: active_kind,
                         position,
+                        volume,
                         attack_frames,
                         release_frames,
                         duration_frames,
@@ -104,6 +106,12 @@ impl OutputState {
                     self.speakers = spks;
                     self.dbap_scratch.resize(n, dbap::Speaker { distance_sq: 1.0, weight: 0.0 });
                     self.gain_scratch.resize(n, 0.0);
+                }
+                sound::SoundCommand::SetMasterVolume(v) => {
+                    self.master_volume = v;
+                }
+                sound::SoundCommand::SetRolloff(db) => {
+                    self.rolloff_db = db;
                 }
             }
         }
@@ -206,7 +214,7 @@ impl OutputState {
                     sound_state.block_peak = sound_state.block_peak.max(raw_abs);
                     sound_state.block_rms_sq += raw * raw;
 
-                    let s = raw * env * mv;
+                    let s = raw * env * sound_state.volume * mv;
                     let frame_start = frame_idx * n_ch;
                     for i in 0..n_speakers {
                         let ch = speakers[i].channel;

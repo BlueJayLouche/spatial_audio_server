@@ -515,12 +515,17 @@ fn tick(model: &mut Model, tick: Tick) {
                 None => continue 'installations,
             };
 
+            let volume = model.sources.get(&source_id)
+                .map(|s| if s.muted { 0.0 } else { s.volume })
+                .unwrap_or(1.0);
+
             // Notify audio output thread.
             let _ = model.sound_cmd_tx.send(SoundCommand::Spawn {
                 id: sound_id,
                 source_id,
                 kind,
                 position: pos,
+                volume,
                 attack_frames,
                 release_frames,
                 duration_frames: Some(duration_frames),
