@@ -1,5 +1,7 @@
-use crate::audio::{self, dbap, sound};
+use crate::audio::{self, dbap, sound, source};
+use crate::audio::detection::{AudioFrameData, SpeakerData};
 use crate::audio::source::wav::reader::DecodedWav;
+use crate::gui::monitor::{ActiveSoundMonitor, AudioMonitorMsg, MsgSender};
 use crossbeam::channel::Receiver;
 use cpal::traits::{DeviceTrait, StreamTrait};
 use fxhash::FxHashMap;
@@ -14,6 +16,7 @@ enum ActiveSourceKind {
 // ── Active sound state ────────────────────────────────────────────────────────
 
 struct ActiveSoundState {
+    source_id: source::Id,
     kind: ActiveSourceKind,
     position: sound::Position,
     attack_frames: i64,
@@ -22,6 +25,10 @@ struct ActiveSoundState {
     elapsed_frames: i64,
     /// Frame index into the decoded WAV (loops). Unused for Realtime sources.
     sample_pos: usize,
+    /// Peak raw sample magnitude over the current render block (reset each block).
+    block_peak: f32,
+    /// Sum of squared raw samples over the current render block (for RMS).
+    block_rms_sq: f32,
 }
 
 // ── Cached decoded WAV ────────────────────────────────────────────────────────
@@ -41,6 +48,7 @@ struct OutputState {
     sound_cmd_rx: Receiver<sound::SoundCommand>,
     wav_rx: Receiver<DecodedWav>,
     input_rx: Receiver<Vec<f32>>,
+    monitor_tx: Option<MsgSender>,
 
     active_sounds: FxHashMap<sound::Id, ActiveSoundState>,
     wav_cache: FxHashMap<u64, CachedWav>,
@@ -55,18 +63,23 @@ struct OutputState {
     gain_scratch: Vec<f32>,
     /// Reused per-render to collect expired ids without allocating.
     expired: Vec<sound::Id>,
+    /// Per-channel peak scratch — indexed by output channel number.
+    channel_peak: Vec<f32>,
+    /// Per-channel sum-of-squares scratch for RMS.
+    channel_rms_sq: Vec<f32>,
 }
 
 impl OutputState {
     fn drain_commands(&mut self) {
         while let Ok(cmd) = self.sound_cmd_rx.try_recv() {
             match cmd {
-                sound::SoundCommand::Spawn { id, kind, position, attack_frames, release_frames, duration_frames, .. } => {
+                sound::SoundCommand::Spawn { id, source_id, kind, position, attack_frames, release_frames, duration_frames } => {
                     let active_kind = match kind {
                         sound::AudioSourceKind::Wav { id: wav_id } => ActiveSourceKind::Wav { wav_id },
                         sound::AudioSourceKind::Realtime { channels } => ActiveSourceKind::Realtime { channels },
                     };
                     self.active_sounds.insert(id, ActiveSoundState {
+                        source_id,
                         kind: active_kind,
                         position,
                         attack_frames,
@@ -74,6 +87,8 @@ impl OutputState {
                         duration_frames,
                         elapsed_frames: 0,
                         sample_pos: 0,
+                        block_peak: 0.0,
+                        block_rms_sq: 0.0,
                     });
                 }
                 sound::SoundCommand::Despawn(id) => {
@@ -116,96 +131,176 @@ impl OutputState {
         data.fill(0.0);
 
         let n_speakers = self.speakers.len();
-        if n_speakers == 0 || self.active_sounds.is_empty() {
-            return;
-        }
 
-        let n_frames = data.len() / self.channels;
+        // ── Mixing ────────────────────────────────────────────────────────────
+        // Use a scoped block so the split-borrow references drop before we call
+        // send_monitor_updates(), which needs unrestricted access to self.
+        if n_speakers > 0 && !self.active_sounds.is_empty() {
+            let n_frames = data.len() / self.channels;
+            let n_ch = self.channels;
+            let mv = self.master_volume;
+            let rolloff = self.rolloff_db;
+            let in_ch = self.input_channels;
 
-        // Copy scalar fields before the split borrow so we don't need to
-        // dereference through &mut pointers inside the hot loop.
-        let n_ch = self.channels;
-        let mv = self.master_volume;
-        let rolloff = self.rolloff_db;
-        let in_ch = self.input_channels;
+            let Self {
+                active_sounds,
+                wav_cache,
+                input_buf,
+                speakers,
+                dbap_scratch,
+                gain_scratch,
+                expired,
+                ..
+            } = self;
 
-        // Split-borrow: extract mutable refs to each field independently so the
-        // borrow checker lets us access them simultaneously inside the loop.
-        let Self {
-            active_sounds,
-            wav_cache,
-            input_buf,
-            speakers,
-            dbap_scratch,
-            gain_scratch,
-            expired,
-            ..
-        } = self;
+            expired.clear();
 
-        expired.clear();
-
-        for (&sound_id, sound_state) in active_sounds.iter_mut() {
-            // Expire sounds that have run their full duration.
-            if let Some(dur) = sound_state.duration_frames {
-                if sound_state.elapsed_frames >= dur {
-                    expired.push(sound_id);
-                    continue;
-                }
-            }
-
-            // Compute DBAP gains once per render block (position changes only
-            // on UpdatePosition, not per-sample).
-            let src_pt = [sound_state.position.point.x.0, sound_state.position.point.y.0];
-            for i in 0..n_speakers {
-                dbap_scratch[i] = dbap::Speaker {
-                    distance_sq: dbap::blurred_distance_2(src_pt, speakers[i].point, audio::DISTANCE_BLUR),
-                    weight: 1.0,
-                };
-            }
-            {
-                let mut gi = dbap::SpeakerGains::new(&dbap_scratch[..n_speakers], rolloff);
-                for g in gain_scratch.iter_mut().take(n_speakers) {
-                    *g = gi.next().unwrap_or(0.0) as f32;
-                }
-            }
-
-            // Mix frame by frame.
-            for frame_idx in 0..n_frames {
-                let env = envelope_gain(
-                    sound_state.elapsed_frames,
-                    sound_state.attack_frames,
-                    sound_state.release_frames,
-                    sound_state.duration_frames,
-                );
-
-                let raw = match &sound_state.kind {
-                    ActiveSourceKind::Wav { wav_id } => {
-                        wav_sample(*wav_id, sound_state.sample_pos, wav_cache)
+            for (&sound_id, sound_state) in active_sounds.iter_mut() {
+                // Expire sounds that have run their full duration.
+                if let Some(dur) = sound_state.duration_frames {
+                    if sound_state.elapsed_frames >= dur {
+                        expired.push(sound_id);
+                        continue;
                     }
-                    ActiveSourceKind::Realtime { channels: rt_ch } => {
-                        realtime_sample(rt_ch, input_buf, in_ch)
-                    }
-                };
+                }
 
-                let s = raw * env * mv;
-                let frame_start = frame_idx * n_ch;
+                // Reset per-block level accumulators.
+                sound_state.block_peak = 0.0;
+                sound_state.block_rms_sq = 0.0;
+
+                // Compute DBAP gains once per render block.
+                let src_pt = [sound_state.position.point.x.0, sound_state.position.point.y.0];
                 for i in 0..n_speakers {
-                    let ch = speakers[i].channel;
-                    if ch < n_ch {
-                        data[frame_start + ch] += s * gain_scratch[i];
+                    dbap_scratch[i] = dbap::Speaker {
+                        distance_sq: dbap::blurred_distance_2(src_pt, speakers[i].point, audio::DISTANCE_BLUR),
+                        weight: 1.0,
+                    };
+                }
+                {
+                    let mut gi = dbap::SpeakerGains::new(&dbap_scratch[..n_speakers], rolloff);
+                    for g in gain_scratch.iter_mut().take(n_speakers) {
+                        *g = gi.next().unwrap_or(0.0) as f32;
                     }
                 }
 
-                if matches!(sound_state.kind, ActiveSourceKind::Wav { .. }) {
-                    sound_state.sample_pos += 1;
+                // Mix frame by frame.
+                for frame_idx in 0..n_frames {
+                    let env = envelope_gain(
+                        sound_state.elapsed_frames,
+                        sound_state.attack_frames,
+                        sound_state.release_frames,
+                        sound_state.duration_frames,
+                    );
+
+                    let raw = match &sound_state.kind {
+                        ActiveSourceKind::Wav { wav_id } => {
+                            wav_sample(*wav_id, sound_state.sample_pos, wav_cache)
+                        }
+                        ActiveSourceKind::Realtime { channels: rt_ch } => {
+                            realtime_sample(rt_ch, input_buf, in_ch)
+                        }
+                    };
+
+                    // Accumulate source level before envelope/volume scaling.
+                    let raw_abs = raw.abs();
+                    sound_state.block_peak = sound_state.block_peak.max(raw_abs);
+                    sound_state.block_rms_sq += raw * raw;
+
+                    let s = raw * env * mv;
+                    let frame_start = frame_idx * n_ch;
+                    for i in 0..n_speakers {
+                        let ch = speakers[i].channel;
+                        if ch < n_ch {
+                            data[frame_start + ch] += s * gain_scratch[i];
+                        }
+                    }
+
+                    if matches!(sound_state.kind, ActiveSourceKind::Wav { .. }) {
+                        sound_state.sample_pos += 1;
+                    }
+                    sound_state.elapsed_frames += 1;
                 }
-                sound_state.elapsed_frames += 1;
+            }
+
+            for id in expired.iter() {
+                active_sounds.remove(id);
+            }
+        }
+        // ── End mixing block — split borrows released ─────────────────────────
+
+        self.send_monitor_updates(data);
+    }
+
+    fn send_monitor_updates(&mut self, data: &[f32]) {
+        let Some(tx) = self.monitor_tx.as_ref() else { return };
+        let n_frames = data.len() / self.channels.max(1);
+
+        // Per-sound updates.
+        for (&id, state) in &self.active_sounds {
+            let rms = if n_frames > 0 {
+                (state.block_rms_sq / n_frames as f32).sqrt()
+            } else {
+                0.0
+            };
+            let _ = tx.try_send(AudioMonitorMsg::SoundUpdate {
+                id,
+                monitor: ActiveSoundMonitor {
+                    source_id: state.source_id,
+                    position: state.position,
+                    peak: state.block_peak,
+                    rms,
+                },
+            });
+        }
+
+        // Expired sounds.
+        for &id in &self.expired {
+            let _ = tx.try_send(AudioMonitorMsg::SoundEnded(id));
+        }
+
+        // Per-channel peak/RMS from the mixed output buffer.
+        let n_ch = self.channels;
+        self.channel_peak.iter_mut().for_each(|v| *v = 0.0);
+        self.channel_rms_sq.iter_mut().for_each(|v| *v = 0.0);
+        for frame in 0..n_frames {
+            for ch in 0..n_ch {
+                let s = data[frame * n_ch + ch];
+                self.channel_peak[ch] = self.channel_peak[ch].max(s.abs());
+                self.channel_rms_sq[ch] += s * s;
             }
         }
 
-        for id in expired.iter() {
-            active_sounds.remove(id);
-        }
+        let speaker_data: Vec<SpeakerData> = self.speakers.iter()
+            .map(|spk| {
+                let ch = spk.channel;
+                if ch < n_ch {
+                    let rms_sq = self.channel_rms_sq[ch];
+                    SpeakerData {
+                        peak: self.channel_peak[ch],
+                        rms: (rms_sq / n_frames.max(1) as f32).sqrt(),
+                    }
+                } else {
+                    SpeakerData { peak: 0.0, rms: 0.0 }
+                }
+            })
+            .collect();
+
+        let (avg_peak, avg_rms) = if speaker_data.is_empty() {
+            (0.0, 0.0)
+        } else {
+            let n = speaker_data.len() as f32;
+            (
+                speaker_data.iter().map(|s| s.peak).sum::<f32>() / n,
+                speaker_data.iter().map(|s| s.rms).sum::<f32>() / n,
+            )
+        };
+
+        let _ = tx.try_send(AudioMonitorMsg::Frame(AudioFrameData {
+            avg_peak,
+            avg_rms,
+            avg_fft: Default::default(),
+            speakers: speaker_data,
+        }));
     }
 }
 
@@ -280,6 +375,7 @@ impl Model {
     /// - `sound_cmd_rx` — receives Spawn/Despawn/UpdatePosition/SetSpeakers from the soundscape and GUI.
     /// - `wav_rx` — receives decoded WAV data from the WAV reader thread.
     /// - `input_rx` — receives interleaved f32 chunks from the audio input callback.
+    /// - `monitor_tx` — sends level/position data to the GUI audio monitor (optional).
     /// - `initial_speakers` — DBAP speaker list at startup; updated via `SetSpeakers` later.
     /// - `input_channels` — channel count of the input stream (used for channel selection).
     pub fn new(
@@ -288,6 +384,7 @@ impl Model {
         sound_cmd_rx: crossbeam::channel::Receiver<sound::SoundCommand>,
         wav_rx: crossbeam::channel::Receiver<DecodedWav>,
         input_rx: crossbeam::channel::Receiver<Vec<f32>>,
+        monitor_tx: Option<MsgSender>,
         master_volume: f32,
         rolloff_db: f64,
         initial_speakers: Vec<sound::SpeakerSnapshot>,
@@ -303,6 +400,7 @@ impl Model {
             sound_cmd_rx,
             wav_rx,
             input_rx,
+            monitor_tx,
             active_sounds: FxHashMap::with_capacity_and_hasher(
                 audio::MAX_SOUNDS,
                 Default::default(),
@@ -314,6 +412,8 @@ impl Model {
             dbap_scratch: vec![dbap::Speaker { distance_sq: 1.0, weight: 0.0 }; n_spk],
             gain_scratch: vec![0.0f32; n_spk],
             expired: Vec::new(),
+            channel_peak: vec![0.0f32; channels],
+            channel_rms_sq: vec![0.0f32; channels],
         };
 
         let err_fn = |e| eprintln!("output stream error: {e}");
@@ -336,21 +436,18 @@ mod tests {
 
     #[test]
     fn envelope_full_sustain() {
-        // No attack, no release, no duration limit → always 1.0
         assert_eq!(envelope_gain(0, 0, 0, None), 1.0);
         assert_eq!(envelope_gain(1000, 0, 0, None), 1.0);
     }
 
     #[test]
     fn envelope_attack_ramp() {
-        // 100-frame attack: at frame 50 gain should be 0.5
         let g = envelope_gain(50, 100, 0, None);
         assert!((g - 0.5).abs() < 1e-5, "expected 0.5 got {g}");
     }
 
     #[test]
     fn envelope_release_ramp() {
-        // 200-frame duration, 100-frame release: at frame 150 (50 frames from end) gain = 0.5
         let g = envelope_gain(150, 0, 100, Some(200));
         assert!((g - 0.5).abs() < 1e-5, "expected 0.5 got {g}");
     }
@@ -361,13 +458,12 @@ mod tests {
         cache.insert(0u64, CachedWav { samples: vec![1.0, 0.0], channels: 1 });
         assert_eq!(wav_sample(0, 0, &cache), 1.0);
         assert_eq!(wav_sample(0, 1, &cache), 0.0);
-        assert_eq!(wav_sample(0, 2, &cache), 1.0); // loops
+        assert_eq!(wav_sample(0, 2, &cache), 1.0);
     }
 
     #[test]
     fn wav_sample_mono_mixdown() {
         let mut cache = FxHashMap::default();
-        // Stereo: L=1.0, R=0.5 → mono = 0.75
         cache.insert(1u64, CachedWav { samples: vec![1.0, 0.5], channels: 2 });
         let s = wav_sample(1, 0, &cache);
         assert!((s - 0.75).abs() < 1e-5, "expected 0.75 got {s}");

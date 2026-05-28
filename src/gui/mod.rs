@@ -85,7 +85,6 @@ pub struct SpatialAudioApp {
 
     // Sender to the audio output thread for speaker updates and future direct commands
     pub audio_cmd_tx: Option<Sender<sound::SoundCommand>>,
-    pub _monitor_tx: Option<monitor::MsgSender>,
 
     // Persistence
     pub assets: PathBuf,
@@ -117,7 +116,6 @@ impl Default for SpatialAudioApp {
             _audio_out: None,
             audio_monitor_rx: None,
             audio_cmd_tx: None,
-            _monitor_tx: None,
             assets: PathBuf::from("assets"),
             config: Default::default(),
             project_slug: String::new(),

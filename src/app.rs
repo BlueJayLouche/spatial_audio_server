@@ -81,6 +81,11 @@ pub fn run() {
         .map(|c| c.channels as usize)
         .unwrap_or(2);
 
+    // ── Audio monitor channel ─────────────────────────────────────────────────
+    // Created before the output model so monitor_tx can be moved into it.
+
+    let (monitor_tx, monitor_rx) = gui::monitor::channel();
+
     // ── Load project ──────────────────────────────────────────────────────────
 
     let project = Project::load(&assets, &project_slug);
@@ -101,6 +106,7 @@ pub fn run() {
         sound_cmd_rx,
         wav_rx,
         input_rx,
+        Some(monitor_tx),
         project.state.master.volume,
         project.state.master.dbap_rolloff_db,
         initial_speakers,
@@ -134,10 +140,6 @@ pub fn run() {
 
     let osc_out = crate::osc::output::spawn();
 
-    // ── Audio monitor channel ─────────────────────────────────────────────────
-
-    let (monitor_tx, monitor_rx) = gui::monitor::channel();
-
     // ── Build and run the GUI ─────────────────────────────────────────────────
 
     let viewport = project.config.window_width as f32;
@@ -162,7 +164,6 @@ pub fn run() {
             app.project_slug = project_slug;
             app.project = Some((project.state, Default::default()));
             app.audio_monitor_rx = Some(monitor_rx);
-            app._monitor_tx = Some(monitor_tx);
             app.audio_cmd_tx = Some(gui_sound_cmd_tx);
             app.osc_in = Some(osc_in);
             app.osc_out = Some(osc_out);
