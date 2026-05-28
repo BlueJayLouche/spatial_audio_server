@@ -9,13 +9,15 @@ pub struct State {
     pub last_error: Option<String>,
 }
 
+/// Returns `true` if any source was added, removed, or had its soundscape constraints changed.
 pub fn show(
     ui: &mut Ui,
     state: &mut State,
     sources: &mut SourcesMap,
     installations: &Installations,
     groups: &SoundscapeGroups,
-) {
+) -> bool {
+    let mut changed = false;
     ui.heading("Sources");
     ui.separator();
 
@@ -54,6 +56,7 @@ pub fn show(
                                 },
                             });
                             state.last_error = None;
+                            changed = true;
                         }
                         Err(e) => {
                             state.last_error = Some(format!("Could not load \"{stem}\": {e}"));
@@ -79,6 +82,7 @@ pub fn show(
                 },
             });
             state.last_error = None;
+            changed = true;
         }
     });
 
@@ -119,15 +123,20 @@ pub fn show(
 
     if let Some(sel_id) = state.selected {
         if let Some(src) = sources.get_mut(&sel_id) {
-            show_source_detail(ui, src, installations, groups);
+            if show_source_detail(ui, src, installations, groups) {
+                changed = true;
+            }
         }
 
         ui.add_space(8.0);
         if ui.button("Remove selected").clicked() {
             sources.remove(&sel_id);
             state.selected = None;
+            changed = true;
         }
     }
+
+    changed
 }
 
 fn show_source_detail(
@@ -135,7 +144,8 @@ fn show_source_detail(
     src: &mut Source,
     installations: &Installations,
     groups: &SoundscapeGroups,
-) {
+) -> bool {
+    let mut changed = false;
     ui.horizontal(|ui| {
         ui.label("Name");
         ui.text_edit_singleline(&mut src.name);
@@ -184,11 +194,8 @@ fn show_source_detail(
                 if let Some(inst) = installations.get(&inst_id) {
                     let mut enabled = sc.installations.contains(&inst_id);
                     if ui.checkbox(&mut enabled, &inst.name).changed() {
-                        if enabled {
-                            sc.installations.insert(inst_id);
-                        } else {
-                            sc.installations.remove(&inst_id);
-                        }
+                        if enabled { sc.installations.insert(inst_id); } else { sc.installations.remove(&inst_id); }
+                        changed = true;
                     }
                 }
             }
@@ -206,11 +213,8 @@ fn show_source_detail(
                     if let Some(g) = groups.get(&gid) {
                         let mut enabled = sc.groups.contains(&gid);
                         if ui.checkbox(&mut enabled, &g.name).changed() {
-                            if enabled {
-                                sc.groups.insert(gid);
-                            } else {
-                                sc.groups.remove(&gid);
-                            }
+                            if enabled { sc.groups.insert(gid); } else { sc.groups.remove(&gid); }
+                            changed = true;
                         }
                     }
                 }
@@ -221,13 +225,19 @@ fn show_source_detail(
             // Simultaneous sounds
             ui.horizontal(|ui| {
                 ui.label("Simultaneous min");
-                ui.add(egui::DragValue::new(&mut sc.simultaneous_sounds.min).range(0..=32));
+                if ui.add(egui::DragValue::new(&mut sc.simultaneous_sounds.min).range(0..=32)).changed() {
+                    changed = true;
+                }
             });
             ui.horizontal(|ui| {
                 ui.label("Simultaneous max");
-                ui.add(egui::DragValue::new(&mut sc.simultaneous_sounds.max).range(1..=32));
+                if ui.add(egui::DragValue::new(&mut sc.simultaneous_sounds.max).range(1..=32)).changed() {
+                    changed = true;
+                }
             });
             sc.simultaneous_sounds.min = sc.simultaneous_sounds.min.min(sc.simultaneous_sounds.max);
         }
     }
+
+    changed
 }

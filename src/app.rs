@@ -173,6 +173,10 @@ pub fn run() {
             app.output_devices = output_devices;
             app.input_devices = input_devices;
 
+            // Populate the soundscape thread with all project data so it can
+            // start spawning sounds immediately.
+            app.sync_soundscape();
+
             Ok(Box::new(app))
         }),
     )

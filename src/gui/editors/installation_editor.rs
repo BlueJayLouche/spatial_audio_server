@@ -9,7 +9,10 @@ pub struct State {
     pub new_name: String,
 }
 
-pub fn show(ui: &mut Ui, state: &mut State, installations: &mut Installations) {
+/// Returns `true` if any installation was added, removed, or modified.
+pub fn show(ui: &mut Ui, state: &mut State, installations: &mut Installations) -> bool {
+    let mut changed = false;
+
     ui.heading("Installations");
     ui.separator();
 
@@ -29,7 +32,9 @@ pub fn show(ui: &mut Ui, state: &mut State, installations: &mut Installations) {
         if let Some(inst) = installations.get_mut(&sel_id) {
             ui.horizontal(|ui| {
                 ui.label("Name");
-                ui.text_edit_singleline(&mut inst.name);
+                if ui.text_edit_singleline(&mut inst.name).changed() {
+                    changed = true;
+                }
             });
 
             ui.label(format!(
@@ -41,11 +46,15 @@ pub fn show(ui: &mut Ui, state: &mut State, installations: &mut Installations) {
             let mut max = inst.soundscape.simultaneous_sounds.max;
             ui.horizontal(|ui| {
                 ui.label("Simultaneous sounds min");
-                ui.add(egui::DragValue::new(&mut min).range(0..=64));
+                if ui.add(egui::DragValue::new(&mut min).range(0..=64)).changed() {
+                    changed = true;
+                }
             });
             ui.horizontal(|ui| {
                 ui.label("Simultaneous sounds max");
-                ui.add(egui::DragValue::new(&mut max).range(1..=64));
+                if ui.add(egui::DragValue::new(&mut max).range(1..=64)).changed() {
+                    changed = true;
+                }
             });
             inst.soundscape.simultaneous_sounds.min = min.min(max);
             inst.soundscape.simultaneous_sounds.max = max.max(1);
@@ -63,6 +72,9 @@ pub fn show(ui: &mut Ui, state: &mut State, installations: &mut Installations) {
             let name = std::mem::take(&mut state.new_name);
             installations.insert(next_id, Installation { name, ..Default::default() });
             state.selected = Some(next_id);
+            changed = true;
         }
     });
+
+    changed
 }

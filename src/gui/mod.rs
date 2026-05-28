@@ -2,10 +2,11 @@ pub mod editors;
 pub mod monitor;
 pub mod theme;
 
+use crate::audio::{source, sound};
 use crate::audio::detection::AudioFrameData;
-use crate::audio::sound;
 use crate::osc::input::ControlMsg;
 use crate::project;
+use crate::soundscape;
 use crossbeam::channel::Sender;
 use fxhash::FxHashMap;
 use monitor::ActiveSoundMonitor;
@@ -224,6 +225,56 @@ impl SpatialAudioApp {
         }
     }
 
+    /// Push all project data (installations, groups, speakers, sources) to the
+    /// soundscape thread. Call at startup and after any edit that changes what
+    /// the soundscape is allowed to spawn.
+    pub fn sync_soundscape(&self) {
+        let Some(sc) = self.soundscape.as_ref() else { return };
+        let Some((state, _)) = self.project.as_ref() else { return };
+
+        // Collect everything we need to send — the closure must be 'static + Send.
+        let installations: Vec<_> = state.installations.iter()
+            .map(|(&id, inst)| (id, inst.soundscape.clone()))
+            .collect();
+
+        let groups: Vec<_> = state.soundscape_groups.iter()
+            .map(|(&id, g)| (id, g.soundscape.clone()))
+            .collect();
+
+        let speakers: Vec<_> = state.speakers.iter()
+            .map(|(&id, s)| (id, soundscape::Speaker {
+                point: s.audio.point,
+                installations: s.audio.installations.clone(),
+            }))
+            .collect();
+
+        let sources: Vec<_> = state.sources.map.iter()
+            .filter_map(|(&id, src)| {
+                if let Some(source::Role::Soundscape(sc)) = &src.audio.role {
+                    Some((id, soundscape::Source {
+                        constraints: sc.clone(),
+                        kind: src.audio.kind.clone(),
+                        spread: src.audio.spread,
+                        channel_radians: src.audio.channel_radians,
+                        volume: src.audio.volume,
+                        muted: src.audio.muted,
+                        last_sound_created: None,
+                    }))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        sc.send(move |model| {
+            model.clear_project_specific_data();
+            for (id, inst) in installations { model.insert_installation(id, inst); }
+            for (id, g)    in groups        { model.insert_group(id, g); }
+            for (id, spk)  in speakers      { model.insert_speaker(id, spk); }
+            for (id, src)  in sources       { model.insert_source(id, src); }
+        });
+    }
+
     /// Send the current speaker list to the audio output thread for DBAP panning.
     pub fn send_speakers(&self) {
         let Some(tx) = self.audio_cmd_tx.as_ref() else { return };
@@ -340,11 +391,15 @@ fn side_panel(ui: &mut egui::Ui, app: &mut SpatialAudioApp) {
         .default_open(app.panel_visibility.installation)
         .show(ui, |ui| {
             if let Some((state, editor)) = app.project.as_mut() {
-                editors::installation_editor::show(
+                let changed = editors::installation_editor::show(
                     ui,
                     &mut editor.installation,
                     &mut state.installations,
                 );
+                if changed {
+                    app.sync_soundscape();
+                    app.save_project();
+                }
             } else {
                 ui.label("No project loaded.");
             }
@@ -359,6 +414,7 @@ fn side_panel(ui: &mut egui::Ui, app: &mut SpatialAudioApp) {
                     ui, &mut editor.speaker, &mut state.speakers, &state.installations, 128,
                 );
                 if changed {
+                    app.sync_soundscape();
                     app.send_speakers();
                     app.save_project();
                 }
@@ -372,13 +428,17 @@ fn side_panel(ui: &mut egui::Ui, app: &mut SpatialAudioApp) {
         .default_open(app.panel_visibility.source)
         .show(ui, |ui| {
             if let Some((state, editor)) = app.project.as_mut() {
-                editors::source_editor::show(
+                let changed = editors::source_editor::show(
                     ui,
                     &mut editor.source,
                     &mut state.sources.map,
                     &state.installations,
                     &state.soundscape_groups,
                 );
+                if changed {
+                    app.sync_soundscape();
+                    app.save_project();
+                }
             } else {
                 ui.label("No project loaded.");
             }
@@ -389,11 +449,15 @@ fn side_panel(ui: &mut egui::Ui, app: &mut SpatialAudioApp) {
         .default_open(app.panel_visibility.soundscape)
         .show(ui, |ui| {
             if let Some((state, editor)) = app.project.as_mut() {
-                editors::soundscape_editor::show(
+                let changed = editors::soundscape_editor::show(
                     ui,
                     &mut editor.soundscape,
                     &mut state.soundscape_groups,
                 );
+                if changed {
+                    app.sync_soundscape();
+                    app.save_project();
+                }
             } else {
                 ui.label("No project loaded.");
             }

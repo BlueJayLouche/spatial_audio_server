@@ -9,7 +9,10 @@ pub struct State {
     pub new_group_name: String,
 }
 
-pub fn show(ui: &mut Ui, state: &mut State, groups: &mut SoundscapeGroups) {
+/// Returns `true` if any group was added, removed, or modified.
+pub fn show(ui: &mut Ui, state: &mut State, groups: &mut SoundscapeGroups) -> bool {
+    let mut changed = false;
+
     ui.heading("Soundscape Groups");
     ui.separator();
 
@@ -29,7 +32,9 @@ pub fn show(ui: &mut Ui, state: &mut State, groups: &mut SoundscapeGroups) {
         if let Some(g) = groups.get_mut(&sel_id) {
             ui.horizontal(|ui| {
                 ui.label("Name");
-                ui.text_edit_singleline(&mut g.name);
+                if ui.text_edit_singleline(&mut g.name).changed() {
+                    changed = true;
+                }
             });
 
             ui.horizontal(|ui| {
@@ -37,6 +42,7 @@ pub fn show(ui: &mut Ui, state: &mut State, groups: &mut SoundscapeGroups) {
                 let mut v = g.soundscape.occurrence_rate.min.0;
                 if ui.add(egui::DragValue::new(&mut v).range(0.0..=f64::MAX).speed(100.0)).changed() {
                     g.soundscape.occurrence_rate.min.0 = v;
+                    changed = true;
                 }
             });
 
@@ -45,22 +51,28 @@ pub fn show(ui: &mut Ui, state: &mut State, groups: &mut SoundscapeGroups) {
                 let mut v = g.soundscape.occurrence_rate.max.0;
                 if ui.add(egui::DragValue::new(&mut v).range(0.0..=f64::MAX).speed(100.0)).changed() {
                     g.soundscape.occurrence_rate.max.0 = v;
+                    changed = true;
                 }
             });
 
             ui.horizontal(|ui| {
                 ui.label("Simultaneous sounds min");
-                ui.add(egui::DragValue::new(&mut g.soundscape.simultaneous_sounds.min).range(0..=64));
+                if ui.add(egui::DragValue::new(&mut g.soundscape.simultaneous_sounds.min).range(0..=64)).changed() {
+                    changed = true;
+                }
             });
 
             ui.horizontal(|ui| {
                 ui.label("Simultaneous sounds max");
-                ui.add(egui::DragValue::new(&mut g.soundscape.simultaneous_sounds.max).range(1..=64));
+                if ui.add(egui::DragValue::new(&mut g.soundscape.simultaneous_sounds.max).range(1..=64)).changed() {
+                    changed = true;
+                }
             });
 
             if ui.button("Remove group").clicked() {
                 groups.remove(&sel_id);
                 state.selected_group = None;
+                changed = true;
             }
         }
     }
@@ -82,6 +94,9 @@ pub fn show(ui: &mut Ui, state: &mut State, groups: &mut SoundscapeGroups) {
                 },
             );
             state.selected_group = Some(next_id);
+            changed = true;
         }
     });
+
+    changed
 }
