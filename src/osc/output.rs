@@ -59,7 +59,9 @@ impl Spawned {
 
 /// Spawn the OSC output thread, returning channels for sending messages and reading logs.
 pub fn spawn() -> Spawned {
-    let (msg_tx, msg_rx) = channel::unbounded::<Message>();
+    // Bounded so a stalled network cannot grow this channel without limit.
+    // Producers must use try_send and accept that stale audio frames are dropped.
+    let (msg_tx, msg_rx) = channel::bounded::<Message>(64);
     let (log_tx, log_rx) = channel::bounded::<LogEntry>(256);
     let thread = thread::Builder::new()
         .name("osc-out".into())

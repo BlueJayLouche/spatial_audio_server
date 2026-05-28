@@ -18,15 +18,12 @@ impl Model {
         sample_tx: Sender<Vec<f32>>,
     ) -> anyhow::Result<Self> {
         let err_fn = |e| eprintln!("input stream error: {e}");
-        // Pre-allocate a scratch buffer so extend_from_slice never reallocates.
-        // try_send avoids blocking the real-time callback when the consumer is slow.
-        let mut scratch = Vec::<f32>::with_capacity(4096 * config.channels as usize);
         let stream = device.build_input_stream(
             config,
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                scratch.clear();
-                scratch.extend_from_slice(data);
-                let _ = sample_tx.try_send(scratch.clone());
+                // One allocation per callback — try_send drops silently when the
+                // consumer is slow, avoiding any backpressure on the audio thread.
+                let _ = sample_tx.try_send(data.to_vec());
             },
             err_fn,
             None,

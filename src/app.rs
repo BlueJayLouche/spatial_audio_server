@@ -149,7 +149,7 @@ fn best_stream_config(
             return cpal::StreamConfig {
                 channels,
                 sample_rate: target_hz,
-                buffer_size: cpal::BufferSize::Default,
+                buffer_size: cpal::BufferSize::Fixed(audio::FRAMES_PER_BUFFER as u32),
             };
         }
     }

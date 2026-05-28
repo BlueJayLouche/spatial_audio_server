@@ -10,6 +10,7 @@ use crate::utils::{self, Ms, Range, Seed};
 use crossbeam::channel::{self, Receiver, Sender};
 use fxhash::FxHashMap;
 use rand::{Rng, RngExt, SeedableRng};
+use rand::rngs::SmallRng;
 use std::ops;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -164,6 +165,8 @@ fn suitability_order(a: &Suitability, b: &Suitability) -> std::cmp::Ordering {
 
 pub struct Model {
     seed: Seed,
+    /// Persistent RNG seeded once at construction — never reseeded per-tick.
+    rng: SmallRng,
     sound_id_gen: sound::IdGenerator,
     playback_duration: Duration,
     installations: Installations,
@@ -182,6 +185,10 @@ pub struct Model {
     active_sound_positions: ActiveSoundPositions,
     available_groups: AvailableGroups,
     available_sources: AvailableSources,
+    /// Scratch buffer — reused each tick to avoid per-tick Vec allocation.
+    expired_scratch: Vec<sound::Id>,
+    /// Scratch buffer — reused each tick to avoid cloning target_sounds_per_installation.
+    inst_target_scratch: Vec<(installation::Id, usize)>,
 
     // channels to other threads
     wav_reader: crate::audio::source::wav::reader::Handle,
@@ -286,8 +293,13 @@ pub fn spawn(
         })
         .expect("failed to spawn soundscape-ticker");
 
+    let rng = SmallRng::seed_from_u64(
+        u64::from_le_bytes(seed[..8].try_into().unwrap())
+    );
+
     let model = Model {
         seed,
+        rng,
         sound_id_gen,
         playback_duration: Duration::ZERO,
         installations: Default::default(),
@@ -304,6 +316,8 @@ pub fn spawn(
         active_sound_positions: Default::default(),
         available_groups: Default::default(),
         available_sources: Default::default(),
+        expired_scratch: Vec::new(),
+        inst_target_scratch: Vec::new(),
         wav_reader,
         sound_cmd_tx,
     };
@@ -350,28 +364,21 @@ fn tick(model: &mut Model, tick: Tick) {
         &mut model.target_sounds_per_installation,
     );
 
-    // Expire finished sounds
-    let expired: Vec<sound::Id> = model.active_sounds.iter()
-        .filter(|(_, s)| {
-            if let Some(dur) = s.duration_ms {
-                let elapsed_ms = Ms(s.started_at.elapsed().as_secs_f64() * 1000.0);
-                elapsed_ms >= dur
-            } else {
-                false
+    // Expire finished sounds — reuse scratch Vec to avoid per-tick allocation.
+    model.expired_scratch.clear();
+    for (&id, s) in &model.active_sounds {
+        if let Some(dur) = s.duration_ms {
+            let elapsed_ms = Ms(s.started_at.elapsed().as_secs_f64() * 1000.0);
+            if elapsed_ms >= dur {
+                model.expired_scratch.push(id);
             }
-        })
-        .map(|(&id, _)| id)
-        .collect();
-    for id in expired {
+        }
+    }
+    for i in 0..model.expired_scratch.len() {
+        let id = model.expired_scratch[i];
         model.active_sounds.remove(&id);
         let _ = model.sound_cmd_tx.send(SoundCommand::Despawn(id));
     }
-
-    // Update positions of active sounds
-    let mut rng = rand::rngs::SmallRng::seed_from_u64(
-        u64::from_le_bytes(model.seed[..8].try_into().unwrap())
-            ^ tick.instant.elapsed().as_nanos() as u64,
-    );
 
     update_active_sound_positions(&model.active_sounds, &mut model.active_sound_positions);
     for (sound_id, sound) in model.active_sounds.iter_mut() {
@@ -386,7 +393,7 @@ fn tick(model: &mut Model, tick: Tick) {
                     &model.target_sounds_per_installation,
                     &model.active_sound_positions,
                 );
-                agent.update(&mut rng, &tick.since_last_tick, &inst_data);
+                agent.update(&mut model.rng, &tick.since_last_tick, &inst_data);
             }
             Movement::Generative(movement::Generative::Ngon(ngon)) => {
                 if let Some(area) = model.installation_areas.get(&sound.initial_installation) {
@@ -406,12 +413,20 @@ fn tick(model: &mut Model, tick: Tick) {
         &mut model.active_sounds_per_installation,
     );
 
-    // Spawn new sounds
-    'installations: for (installation, &num_target) in &model.target_sounds_per_installation.clone() {
-        let num_active = model.active_sounds_per_installation.get(installation).map(|v| v.len()).unwrap_or(0);
+    // Spawn new sounds.
+    // Collect (installation, target_count) into a scratch Vec to avoid cloning the HashMap
+    // while also needing mutable access to other model fields inside the loop.
+    model.inst_target_scratch.clear();
+    for (&inst, &count) in &model.target_sounds_per_installation {
+        model.inst_target_scratch.push((inst, count));
+    }
+
+    'installations: for idx in 0..model.inst_target_scratch.len() {
+        let (installation, num_target) = model.inst_target_scratch[idx];
+        let num_active = model.active_sounds_per_installation.get(&installation).map(|v| v.len()).unwrap_or(0);
         if num_target <= num_active { continue; }
 
-        let inst_area = match model.installation_areas.get(installation) {
+        let inst_area = match model.installation_areas.get(&installation) {
             Some(a) => *a,
             None => continue,
         };
@@ -428,7 +443,7 @@ fn tick(model: &mut Model, tick: Tick) {
             if model.available_groups.is_empty() { continue 'installations; }
 
             update_available_sources(
-                installation,
+                &installation,
                 &tick,
                 &model.sources,
                 &model.active_sounds,
@@ -448,40 +463,40 @@ fn tick(model: &mut Model, tick: Tick) {
                 suitability_order(&a.suitability, &b.suitability)
             });
 
-            let group_idx = rng.random_range(0..num_eq_groups);
-            let source_idx = rng.random_range(0..num_eq_sources);
+            let group_idx = model.rng.random_range(0..num_eq_groups);
+            let source_idx = model.rng.random_range(0..num_eq_sources);
             let picked_source = &model.available_sources[source_idx];
             let source_id = picked_source.id;
 
             // Generate durations
-            let playback_ms = random_ms(&mut rng, picked_source.playback_duration);
-            let attack_ms = random_ms(&mut rng, picked_source.attack_duration);
-            let release_ms = random_ms(&mut rng, picked_source.release_duration);
+            let playback_ms = random_ms(&mut model.rng, picked_source.playback_duration);
+            let attack_ms = random_ms(&mut model.rng, picked_source.attack_duration);
+            let release_ms = random_ms(&mut model.rng, picked_source.release_duration);
             let attack_frames = attack_ms.to_samples(crate::audio::SAMPLE_RATE);
             let release_frames = release_ms.to_samples(crate::audio::SAMPLE_RATE);
             let duration_frames = playback_ms.to_samples(crate::audio::SAMPLE_RATE);
 
             // Generate initial position
-            let x_mag: f64 = rng.random();
-            let y_mag: f64 = rng.random();
+            let x_mag: f64 = model.rng.random();
+            let y_mag: f64 = model.rng.random();
             let pos = sound::Position {
                 point: Point2::new(
                     inst_area.bounding_rect.left + inst_area.bounding_rect.width() * x_mag,
                     inst_area.bounding_rect.bottom + inst_area.bounding_rect.height() * y_mag,
                 ),
-                radians: rng.random::<f32>() * std::f32::consts::TAU,
+                radians: model.rng.random::<f32>() * std::f32::consts::TAU,
             };
 
             // Generate movement
             let movement = generate_movement(
                 source_id,
                 &model.sources,
-                *installation,
+                installation,
                 &model.installations,
                 &model.installation_areas,
                 &model.target_sounds_per_installation,
                 &model.active_sounds,
-                &mut rng,
+                &mut model.rng,
             );
 
             let sound_id = model.sound_id_gen.generate_next();
@@ -504,7 +519,7 @@ fn tick(model: &mut Model, tick: Tick) {
             }
 
             let active = ActiveSound {
-                initial_installation: *installation,
+                initial_installation: installation,
                 movement,
                 handle: sound::Handle { sound_id, source_id },
                 started_at: tick.instant,

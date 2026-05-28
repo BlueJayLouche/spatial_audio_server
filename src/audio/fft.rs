@@ -17,8 +17,10 @@ pub fn hann_window(n: usize) -> Vec<f32> {
 
 /// Forward FFT returning magnitude spectrum for the first N/2 positive-frequency bins.
 ///
-/// `samples` must have exactly `FFT_WINDOW_LEN` elements. A Hann window is applied
-/// before the transform to reduce spectral leakage.
+/// **Deprecated** — allocates a new planner, window, and scratch buffer on every call.
+/// Use [`super::detector::FftDetector`] instead, which pre-allocates all buffers once
+/// and is safe to drive from any thread.
+#[deprecated(note = "allocates on every call — use FftDetector instead")]
 pub fn forward(samples: &[f32]) -> Vec<f32> {
     assert_eq!(samples.len(), FFT_WINDOW_LEN, "FFT input must be exactly FFT_WINDOW_LEN samples");
     let window = hann_window(FFT_WINDOW_LEN);
@@ -55,6 +57,7 @@ pub fn mel_to_hz(mel: f64) -> f64 {
 mod tests {
     use super::*;
 
+    #[allow(deprecated)]
     #[test]
     fn sine_wave_peak_in_correct_bin() {
         let freq_hz = 1000.0_f32;

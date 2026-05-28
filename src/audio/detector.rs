@@ -3,6 +3,10 @@ use std::sync::Arc;
 
 use super::fft::{hann_window, FFT_WINDOW_LEN};
 
+/// 75% overlap: advance the window by one quarter of its length each hop.
+/// At 48 kHz this gives ~187 spectrum updates per second instead of ~47.
+const HOP_SIZE: usize = FFT_WINDOW_LEN / 4;
+
 /// Rolling-window RMS envelope detector — allocation-free after construction.
 pub struct EnvDetector {
     buffer: Vec<f32>,
@@ -29,11 +33,14 @@ impl EnvDetector {
     }
 }
 
-/// Accumulates audio samples and computes a magnitude spectrum when the window fills.
+/// Accumulates audio samples and computes a magnitude spectrum on every hop.
 ///
 /// All internal buffers are pre-allocated — no heap allocation in the push path.
+/// The FFT is recomputed every `HOP_SIZE` samples once the ring buffer is filled
+/// (75% overlap, giving ~187 Hz spectrum update rate at 48 kHz).
 pub struct FftDetector {
     ring: Vec<f32>,
+    /// Next write position; also the index of the oldest sample when filled.
     ring_pos: usize,
     filled: bool,
     window: Vec<f32>,
@@ -61,13 +68,16 @@ impl FftDetector {
         }
     }
 
-    /// Push one sample. When the ring buffer wraps, the FFT is recomputed.
+    /// Push one sample. The FFT is recomputed every `HOP_SIZE` samples once
+    /// the ring buffer has been filled for the first time.
     pub fn push(&mut self, sample: f32) {
         self.ring[self.ring_pos] = sample;
         self.ring_pos += 1;
         if self.ring_pos == FFT_WINDOW_LEN {
             self.ring_pos = 0;
             self.filled = true;
+        }
+        if self.filled && self.ring_pos % HOP_SIZE == 0 {
             self.compute_fft();
         }
     }
@@ -78,9 +88,13 @@ impl FftDetector {
     }
 
     fn compute_fft(&mut self) {
-        for (i, c) in self.work.iter_mut().enumerate() {
-            c.re = self.ring[i] * self.window[i];
-            c.im = 0.0;
+        // ring_pos is the next write position = index of the oldest sample.
+        // Read FFT_WINDOW_LEN samples in chronological order (oldest → newest).
+        let start = self.ring_pos;
+        for i in 0..FFT_WINDOW_LEN {
+            let ring_i = (start + i) % FFT_WINDOW_LEN;
+            self.work[i].re = self.ring[ring_i] * self.window[i];
+            self.work[i].im = 0.0;
         }
         self.fft.process_with_scratch(&mut self.work, &mut self.scratch);
         for (bin, c) in self.bins.iter_mut().zip(self.work.iter()) {

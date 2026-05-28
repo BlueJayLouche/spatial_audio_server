@@ -3,40 +3,36 @@ use crate::installation;
 use crate::metres::Metres;
 use fxhash::FxHashSet;
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 
 /// Sound Ids use a private u64 to match the original format.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Id(u64);
 
-impl Id {
-    const INITIAL: Self = Id(0);
-}
-
 /// Thread-safe generator; shared between the GUI and soundscape threads.
+///
+/// Uses an atomic counter — lock-free and safe to call from any thread,
+/// including the audio thread, without risk of priority inversion.
 #[derive(Clone)]
 pub struct IdGenerator {
-    next: Arc<Mutex<Id>>,
+    next: Arc<AtomicU64>,
 }
 
 impl IdGenerator {
     pub fn new() -> Self {
-        IdGenerator { next: Arc::new(Mutex::new(Id::INITIAL)) }
+        IdGenerator { next: Arc::new(AtomicU64::new(0)) }
+    }
+
+    pub fn generate_next(&self) -> Id {
+        Id(self.next.fetch_add(1, Ordering::Relaxed))
     }
 }
 
 impl Default for IdGenerator {
     fn default() -> Self { Self::new() }
-}
-
-impl IdGenerator {
-
-    pub fn generate_next(&self) -> Id {
-        let mut n = self.next.lock().expect("sound::IdGenerator mutex poisoned");
-        let id = *n;
-        *n = Id(id.0.wrapping_add(1));
-        id
-    }
 }
 
 /// The spatial position and orientation of a sound within the exhibition.
