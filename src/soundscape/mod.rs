@@ -122,14 +122,11 @@ struct ActiveSoundPosition {
 #[derive(Debug)]
 struct Suitability {
     num_sounds_needed: usize,
-    num_available_sounds: usize,
     timing: Option<Timing>,
-    occurrence_rate_interval: Range<Ms>,
 }
 
 #[derive(Debug)]
 struct Timing {
-    duration_since_min_interval: Ms,
     duration_until_sound_needed: Ms,
 }
 
@@ -225,6 +222,7 @@ impl Model {
 pub struct Soundscape {
     tx: Sender<Message>,
     thread: Arc<Mutex<Option<JoinHandle<()>>>>,
+    ticker_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
     is_playing: Arc<AtomicBool>,
 }
 
@@ -241,9 +239,16 @@ impl Soundscape {
         self.is_playing.store(false, Ordering::Relaxed);
         let _ = self.tx.send(Message::Pause);
     }
-    pub fn exit(self) -> Option<JoinHandle<()>> {
+    pub fn exit(self) {
         let _ = self.tx.send(Message::Exit);
-        self.thread.lock().unwrap().take()
+        // Join the main soundscape thread first — dropping its rx causes the ticker to exit too
+        if let Some(h) = self.thread.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            let _ = h.join();
+        }
+        // Ticker exits within one TICK_RATE_MS after the main thread drops its receiver
+        if let Some(h) = self.ticker_thread.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            let _ = h.join();
+        }
     }
 }
 
@@ -263,7 +268,7 @@ pub fn spawn(
     // Ticker thread — fires at 16ms intervals, sends Tick messages while playing
     let tick_tx = tx.clone();
     let tick_playing = Arc::clone(&is_playing);
-    thread::Builder::new()
+    let ticker_handle = thread::Builder::new()
         .name("soundscape-ticker".into())
         .spawn(move || {
             let mut last = Instant::now();
@@ -308,7 +313,12 @@ pub fn spawn(
         .spawn(move || run(model, rx))
         .expect("failed to spawn soundscape thread");
 
-    Soundscape { tx, thread: Arc::new(Mutex::new(Some(handle))), is_playing }
+    Soundscape {
+        tx,
+        thread: Arc::new(Mutex::new(Some(handle))),
+        ticker_thread: Arc::new(Mutex::new(Some(ticker_handle))),
+        is_playing,
+    }
 }
 
 // ── Thread loop ───────────────────────────────────────────────────────────────
@@ -655,7 +665,7 @@ fn build_agent_data(
     }
     src.constraints.installations.iter().filter_map(|inst| {
         let area = *areas.get(inst)?;
-        let range = &installations[inst].simultaneous_sounds;
+        let range = &installations.get(inst)?.simultaneous_sounds;
         let current = per_inst.get(inst).map(|v| v.iter().filter(|&&s| positions[&s].source_id == source_id).count()).unwrap_or(0);
         let target = *target_per_inst.get(inst).unwrap_or(&0);
         Some((*inst, movement::agent::InstallationData {
@@ -686,19 +696,11 @@ fn update_available_groups(
         let timing = groups_last_used.get(group_id).and_then(|&last| {
             let since_ms = Ms(tick.instant.duration_since(last).as_secs_f64() * 1000.0);
             if since_ms <= group.occurrence_rate.min { return None; }
-            Some(Timing {
-                duration_since_min_interval: since_ms - group.occurrence_rate.min,
-                duration_until_sound_needed: group.occurrence_rate.max - since_ms,
-            })
+            Some(Timing { duration_until_sound_needed: group.occurrence_rate.max - since_ms })
         });
         Some(AvailableGroup {
             id: *group_id,
-            suitability: Suitability {
-                num_sounds_needed,
-                num_available_sounds: num_available,
-                timing,
-                occurrence_rate_interval: group.occurrence_rate,
-            },
+            suitability: Suitability { num_sounds_needed, timing },
         })
     }));
 }
@@ -723,19 +725,11 @@ fn update_available_sources(
         let timing = sources_last_used.get(source_id).and_then(|&last| {
             let since_ms = Ms(tick.instant.duration_since(last).as_secs_f64() * 1000.0);
             if since_ms <= source.constraints.occurrence_rate.min { return None; }
-            Some(Timing {
-                duration_since_min_interval: since_ms - source.constraints.occurrence_rate.min,
-                duration_until_sound_needed: source.constraints.occurrence_rate.max - since_ms,
-            })
+            Some(Timing { duration_until_sound_needed: source.constraints.occurrence_rate.max - since_ms })
         });
         Some(AvailableSource {
             id: *source_id,
-            suitability: Suitability {
-                num_sounds_needed,
-                num_available_sounds: num_available,
-                timing,
-                occurrence_rate_interval: source.constraints.occurrence_rate,
-            },
+            suitability: Suitability { num_sounds_needed, timing },
             playback_duration: source.constraints.playback_duration,
             attack_duration: source.constraints.attack_duration,
             release_duration: source.constraints.release_duration,

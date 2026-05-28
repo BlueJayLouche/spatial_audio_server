@@ -1,6 +1,5 @@
 use cpal::traits::{DeviceTrait, StreamTrait};
 
-use super::{FRAMES_PER_BUFFER, MAX_CHANNELS};
 
 /// A live cpal output stream.
 pub struct Model {
@@ -43,6 +42,7 @@ fn render(data: &mut [f32], _channels: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::FRAMES_PER_BUFFER;
 
     #[test]
     fn render_writes_silence() {

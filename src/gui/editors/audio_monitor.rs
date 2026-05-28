@@ -1,5 +1,5 @@
 use crate::audio::detection::AudioFrameData;
-use crate::audio::speaker;
+
 use crate::gui::monitor::ActiveSoundMonitor;
 use crate::audio::sound;
 use egui::Ui;

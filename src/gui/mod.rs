@@ -81,6 +81,10 @@ pub struct SpatialAudioApp {
     // Incoming data channels
     pub audio_monitor_rx: Option<monitor::MsgReceiver>,
 
+    // Channel ends kept alive so pipelines are not severed before mixing is wired
+    pub _sound_cmd_rx: Option<crossbeam::channel::Receiver<crate::audio::sound::SoundCommand>>,
+    pub _monitor_tx: Option<monitor::MsgSender>,
+
     // Persistence
     pub assets: PathBuf,
     pub config: crate::config::Config,
@@ -106,6 +110,8 @@ impl Default for SpatialAudioApp {
             _audio_in: None,
             _audio_out: None,
             audio_monitor_rx: None,
+            _sound_cmd_rx: None,
+            _monitor_tx: None,
             assets: PathBuf::from("assets"),
             config: Default::default(),
             project_slug: String::new(),
@@ -214,9 +220,7 @@ impl SpatialAudioApp {
     fn shutdown_threads(&mut self) {
         // Soundscape first so it stops sending commands before audio output goes down
         if let Some(ss) = self.soundscape.take() {
-            if let Some(h) = ss.exit() {
-                let _ = h.join();
-            }
+            ss.exit();
         }
         // WAV reader
         if let Some(wav) = self.wav_reader.take() {
@@ -244,6 +248,9 @@ impl eframe::App for SpatialAudioApp {
     }
 
     fn on_exit(&mut self) {
+        // Save before shutdown: the soundscape thread mutates only its own Model,
+        // not SpatialAudioApp::project, so project state is stable here.
+        // If future phases push state back to the GUI, reverse this order.
         self.save_project();
         self.save_config();
         self.shutdown_threads();

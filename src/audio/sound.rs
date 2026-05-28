@@ -23,6 +23,13 @@ impl IdGenerator {
     pub fn new() -> Self {
         IdGenerator { next: Arc::new(Mutex::new(Id::INITIAL)) }
     }
+}
+
+impl Default for IdGenerator {
+    fn default() -> Self { Self::new() }
+}
+
+impl IdGenerator {
 
     pub fn generate_next(&self) -> Id {
         let mut n = self.next.lock().expect("sound::IdGenerator mutex poisoned");

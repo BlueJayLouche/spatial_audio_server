@@ -8,7 +8,9 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-const BP_ADDR: &str = "/bp";
+// "bp" = Beyond Perception (the original Museums Victoria installation namespace).
+// Any new deployment will need to change this prefix; consider wiring it through Config.
+pub const BP_ADDR: &str = "/bp";
 const SOURCE_VOLUME_PREFIX: &str = "/source_volume/";
 const MASTER_VOLUME_ADDR: &str = "/master_volume";
 const PLAY_SOUNDSCAPE_ADDR: &str = "/play_soundscape";
@@ -47,6 +49,19 @@ impl Spawned {
     pub fn exit(self) -> JoinHandle<()> {
         self.shutdown.store(true, Ordering::Relaxed);
         self.thread
+    }
+
+    /// A do-nothing `Spawned` with disconnected channels and a thread that exits immediately.
+    /// Use this when no OSC input is needed (e.g. port unavailable).
+    pub fn inert() -> Self {
+        let (_, log_rx) = channel::bounded::<LogEntry>(0);
+        let (_, control_rx) = channel::bounded::<ControlMsg>(0);
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let thread = thread::Builder::new()
+            .name("osc-in-noop".into())
+            .spawn(|| {})
+            .expect("failed to spawn noop osc-in thread");
+        Spawned { log_rx, control_rx, shutdown, thread }
     }
 }
 
@@ -131,7 +146,7 @@ fn parse_control(msg: &rosc::OscMessage) -> Option<ControlMsg> {
             if let Some(rosc::OscType::Float(volume)) = msg.args.first() {
                 return Some(ControlMsg::SourceVolume {
                     name: name.to_string(),
-                    volume: *volume,
+                    volume: volume.clamp(0.0, 1.0),
                 });
             }
         }

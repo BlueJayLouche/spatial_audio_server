@@ -43,10 +43,11 @@ impl Agent {
         max_rotation: f64,
         directional: bool,
     ) -> Self {
-        let inst_data = installations
-            .get(&start_installation)
-            .expect("no InstallationData for start_installation");
-        let location = random_in_area(&mut rng, &inst_data.area);
+        let location = match installations.get(&start_installation) {
+            Some(d) => random_in_area(&mut rng, &d.area),
+            // Installation was removed after this sound was spawned — park at origin.
+            None => [0.0; 2],
+        };
         let target_location = pick_target(&mut rng, installations);
         let start_magnitude = rng.random::<f64>() * max_speed;
         let desired = desired_velocity(location, target_location);

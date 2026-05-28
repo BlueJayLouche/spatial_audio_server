@@ -30,7 +30,7 @@ pub fn run() {
         StreamDir::Output,
     );
 
-    let (sound_cmd_tx, _sound_cmd_rx) = crossbeam::channel::unbounded::<audio::sound::SoundCommand>();
+    let (sound_cmd_tx, sound_cmd_rx) = crossbeam::channel::unbounded::<audio::sound::SoundCommand>();
 
     // WAV reader thread
     let wav_spawned = audio::source::wav::reader::spawn();
@@ -77,9 +77,6 @@ pub fn run() {
     // ── Audio monitor channel ─────────────────────────────────────────────────
 
     let (monitor_tx, monitor_rx) = gui::monitor::channel();
-    // monitor_tx is available for the audio output thread to send frames
-    // (wired fully when audio mixing is implemented)
-    drop(monitor_tx);
 
     // ── Load project ──────────────────────────────────────────────────────────
 
@@ -109,6 +106,8 @@ pub fn run() {
             app.project_slug = project_slug;
             app.project = Some((project.state, Default::default()));
             app.audio_monitor_rx = Some(monitor_rx);
+            app._sound_cmd_rx = Some(sound_cmd_rx);
+            app._monitor_tx = Some(monitor_tx);
             app.osc_in = Some(osc_in);
             app.osc_out = Some(osc_out);
             app.soundscape = Some(soundscape);
@@ -170,11 +169,6 @@ fn best_stream_config(
     }
 }
 
-/// Create a dummy OSC input Spawned that immediately shuts down.
-/// Used when the UDP port cannot be bound (e.g. already in use).
 fn no_op_osc_in() -> crate::osc::input::Spawned {
-    crate::osc::input::spawn(0).unwrap_or_else(|_| {
-        // Last resort: bind on an ephemeral port
-        crate::osc::input::spawn(0).expect("could not bind any OSC input port")
-    })
+    crate::osc::input::Spawned::inert()
 }

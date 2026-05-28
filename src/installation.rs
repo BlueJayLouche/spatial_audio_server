@@ -1,7 +1,5 @@
 use crate::utils::Range;
-use fxhash::FxHashMap;
 use serde::{Deserialize, Deserializer, Serialize};
-use std::net;
 
 /// A memory-efficient unique identifier for an installation.
 ///

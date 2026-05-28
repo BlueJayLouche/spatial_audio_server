@@ -36,14 +36,7 @@ impl Handle {
         let _ = self.command_tx.send(Command::Unload { id });
     }
 
-    /// Signal the reader thread to exit and return its JoinHandle.
-    pub fn exit(self) -> anyhow::Result<JoinHandle<()>> {
-        let _ = self.command_tx.send(Command::Exit);
-        // JoinHandle was kept in the spawned struct; here we return an err
-        // because the Handle alone cannot carry it. Callers that need to join
-        // should use `Spawned::join()` instead.
-        Err(anyhow::anyhow!("use Spawned::join() to join the WAV reader thread"))
-    }
+
 }
 
 /// Returned by `spawn()` — holds both the handle and the thread's JoinHandle.
