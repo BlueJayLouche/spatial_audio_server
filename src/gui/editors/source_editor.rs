@@ -1,5 +1,5 @@
 use crate::audio::source;
-use crate::project::{Source, SourcesMap};
+use crate::project::{Installations, Source, SoundscapeGroups, SourcesMap};
 use egui::Ui;
 
 /// Transient UI state for the source editor.
@@ -9,7 +9,13 @@ pub struct State {
     pub last_error: Option<String>,
 }
 
-pub fn show(ui: &mut Ui, state: &mut State, sources: &mut SourcesMap) {
+pub fn show(
+    ui: &mut Ui,
+    state: &mut State,
+    sources: &mut SourcesMap,
+    installations: &Installations,
+    groups: &SoundscapeGroups,
+) {
     ui.heading("Sources");
     ui.separator();
 
@@ -113,7 +119,7 @@ pub fn show(ui: &mut Ui, state: &mut State, sources: &mut SourcesMap) {
 
     if let Some(sel_id) = state.selected {
         if let Some(src) = sources.get_mut(&sel_id) {
-            show_source_detail(ui, src);
+            show_source_detail(ui, src, installations, groups);
         }
 
         ui.add_space(8.0);
@@ -124,7 +130,12 @@ pub fn show(ui: &mut Ui, state: &mut State, sources: &mut SourcesMap) {
     }
 }
 
-fn show_source_detail(ui: &mut Ui, src: &mut Source) {
+fn show_source_detail(
+    ui: &mut Ui,
+    src: &mut Source,
+    installations: &Installations,
+    groups: &SoundscapeGroups,
+) {
     ui.horizontal(|ui| {
         ui.label("Name");
         ui.text_edit_singleline(&mut src.name);
@@ -148,16 +159,75 @@ fn show_source_detail(ui: &mut Ui, src: &mut Source) {
             ));
         }
         source::Kind::Realtime(rt) => {
-            ui.label(format!("Channels: {}..{}", rt.channels.start, rt.channels.end));
+            ui.label(format!("Input channels: {}..{}", rt.channels.start, rt.channels.end));
         }
     }
 
-    if let Some(role) = &src.audio.role {
+    // ── Soundscape role constraints ───────────────────────────────────────────
+
+    if let Some(role) = src.audio.role.as_mut() {
         let role_str = match role {
             source::Role::Soundscape(_) => "Soundscape",
             source::Role::Interactive => "Interactive",
             source::Role::Scribbles => "Scribbles",
         };
         ui.label(format!("Role: {role_str}"));
+
+        if let source::Role::Soundscape(sc) = role {
+            ui.add_space(6.0);
+
+            // Installations
+            ui.label("Installations (check to enable):");
+            let mut inst_ids: Vec<_> = installations.keys().copied().collect();
+            inst_ids.sort_by_key(|i| i.0);
+            for inst_id in inst_ids {
+                if let Some(inst) = installations.get(&inst_id) {
+                    let mut enabled = sc.installations.contains(&inst_id);
+                    if ui.checkbox(&mut enabled, &inst.name).changed() {
+                        if enabled {
+                            sc.installations.insert(inst_id);
+                        } else {
+                            sc.installations.remove(&inst_id);
+                        }
+                    }
+                }
+            }
+
+            ui.add_space(4.0);
+
+            // Groups
+            ui.label("Soundscape groups (check to enable):");
+            if groups.is_empty() {
+                ui.weak("No groups — add one in the Soundscape panel.");
+            } else {
+                let mut group_ids: Vec<_> = groups.keys().copied().collect();
+                group_ids.sort_by_key(|g| g.0);
+                for gid in group_ids {
+                    if let Some(g) = groups.get(&gid) {
+                        let mut enabled = sc.groups.contains(&gid);
+                        if ui.checkbox(&mut enabled, &g.name).changed() {
+                            if enabled {
+                                sc.groups.insert(gid);
+                            } else {
+                                sc.groups.remove(&gid);
+                            }
+                        }
+                    }
+                }
+            }
+
+            ui.add_space(4.0);
+
+            // Simultaneous sounds
+            ui.horizontal(|ui| {
+                ui.label("Simultaneous min");
+                ui.add(egui::DragValue::new(&mut sc.simultaneous_sounds.min).range(0..=32));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Simultaneous max");
+                ui.add(egui::DragValue::new(&mut sc.simultaneous_sounds.max).range(1..=32));
+            });
+            sc.simultaneous_sounds.min = sc.simultaneous_sounds.min.min(sc.simultaneous_sounds.max);
+        }
     }
 }

@@ -372,7 +372,13 @@ fn side_panel(ui: &mut egui::Ui, app: &mut SpatialAudioApp) {
         .default_open(app.panel_visibility.source)
         .show(ui, |ui| {
             if let Some((state, editor)) = app.project.as_mut() {
-                editors::source_editor::show(ui, &mut editor.source, &mut state.sources.map);
+                editors::source_editor::show(
+                    ui,
+                    &mut editor.source,
+                    &mut state.sources.map,
+                    &state.installations,
+                    &state.soundscape_groups,
+                );
             } else {
                 ui.label("No project loaded.");
             }
