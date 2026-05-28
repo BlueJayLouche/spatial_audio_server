@@ -4,7 +4,7 @@ use crate::gui::{self, SpatialAudioApp};
 use crate::project::Project;
 use crate::soundscape;
 use crate::utils;
-use cpal::traits::DeviceTrait;
+use cpal::traits::{DeviceTrait, HostTrait};
 
 pub fn run() {
     let assets = utils::assets_dir();
@@ -18,6 +18,15 @@ pub fn run() {
     // ── Audio setup ───────────────────────────────────────────────────────────
 
     let host = audio::host();
+
+    #[allow(deprecated)]
+    let output_devices: Vec<String> = host.output_devices()
+        .map(|devs| devs.filter_map(|d| d.name().ok()).collect())
+        .unwrap_or_default();
+    #[allow(deprecated)]
+    let input_devices: Vec<String> = host.input_devices()
+        .map(|devs| devs.filter_map(|d| d.name().ok()).collect())
+        .unwrap_or_default();
 
     let output_device = audio::find_output_device(&host, &config.target_output_device_name)
         .expect("no audio output device found");
@@ -114,6 +123,8 @@ pub fn run() {
             app.wav_reader = Some(wav_spawned);
             app._audio_in = audio_in;
             app._audio_out = Some(audio_out);
+            app.output_devices = output_devices;
+            app.input_devices = input_devices;
 
             Ok(Box::new(app))
         }),

@@ -20,15 +20,17 @@ pub struct Wav {
 }
 
 impl Wav {
-    pub fn from_path(path: PathBuf) -> Result<Self, hound::Error> {
+    pub fn from_path(path: PathBuf) -> anyhow::Result<Self> {
         let reader = hound::WavReader::open(&path)?;
         let spec = reader.spec();
         let channels = spec.channels as usize;
         let sample_hz = spec.sample_rate as f64;
-        assert_eq!(
-            sample_hz, SAMPLE_RATE,
-            "WAV files must have a sample rate of {SAMPLE_RATE}"
-        );
+        if (sample_hz - SAMPLE_RATE).abs() > 0.5 {
+            anyhow::bail!(
+                "sample rate {sample_hz} Hz — file must be 48 kHz (convert with ffmpeg: \
+                 ffmpeg -i input.wav -ar 48000 output.wav)"
+            );
+        }
         let duration = reader.duration() as i64;
         Ok(Wav {
             path,

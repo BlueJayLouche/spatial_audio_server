@@ -89,6 +89,10 @@ pub struct SpatialAudioApp {
     pub assets: PathBuf,
     pub config: crate::config::Config,
     pub project_slug: String,
+
+    // Available audio devices (enumerated at startup, used by the device selector)
+    pub output_devices: Vec<String>,
+    pub input_devices: Vec<String>,
 }
 
 impl Default for SpatialAudioApp {
@@ -115,6 +119,8 @@ impl Default for SpatialAudioApp {
             assets: PathBuf::from("assets"),
             config: Default::default(),
             project_slug: String::new(),
+            output_devices: Vec::new(),
+            input_devices: Vec::new(),
         }
     }
 }
@@ -297,6 +303,21 @@ fn side_panel(ui: &mut egui::Ui, app: &mut SpatialAudioApp) {
                 );
             } else {
                 ui.label("No project loaded.");
+            }
+        });
+
+    // Devices
+    egui::CollapsingHeader::new("Devices")
+        .default_open(false)
+        .show(ui, |ui| {
+            let changed = editors::device_editor::show(
+                ui,
+                &mut app.config,
+                &app.output_devices,
+                &app.input_devices,
+            );
+            if changed {
+                app.save_config();
             }
         });
 

@@ -1,4 +1,5 @@
 pub mod audio_monitor;
+pub mod device_editor;
 pub mod control_log;
 pub mod installation_editor;
 pub mod master;
